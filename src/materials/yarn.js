@@ -10,10 +10,13 @@
  */
 
 import * as THREE from "three";
+import { PERF } from "../core/perf.js";
 
-const TEX_SIZE = 512;
+const TEX_SIZE = PERF.yarnTexSize;
+const TEX_MASK = TEX_SIZE - 1;
+const TEX_SCALE = TEX_SIZE / 512;
 const TEX_PIXELS = TEX_SIZE * TEX_SIZE;
-const wrapIdx = (v) => v & 511;
+const wrapIdx = (v) => v & TEX_MASK;
 const TWO_PI = Math.PI * 2;
 
 function hashInt(x, y, salt = 0) {
@@ -225,7 +228,7 @@ function buildCable() {
   const ch = TEX_SIZE / 8;
   for (let b = 0; b < 2; b++) {
     const col0 = b * 4;
-    drawYarnStroke(layers, (col0 + 1.5) * cw, -64, (col0 + 1.5) * cw, 576, 1.4 * cw, {
+    drawYarnStroke(layers, (col0 + 1.5) * cw, -ch, (col0 + 1.5) * cw, TEX_SIZE + ch, 1.4 * cw, {
       amp: 0.5, base: true, taper: false, exponent: 0.35,
     });
     for (let r = 0; r < 8; r++) {
@@ -251,9 +254,10 @@ function buildBoucle() {
   const layers = makeCanvasLayers();
   layers.base.fill(0.1);
   const rand = mulberry32(1337);
+  const s = TEX_SCALE;
   for (const tier of [
-    { count: 520, R: [9, 18], w: [4, 6.5] },
-    { count: 1400, R: [4, 9], w: [2.2, 3.6] },
+    { count: Math.round(520 * PERF.boucleScale), R: [9 * s, 18 * s], w: [4 * s, 6.5 * s] },
+    { count: Math.round(1400 * PERF.boucleScale), R: [4 * s, 9 * s], w: [2.2 * s, 3.6 * s] },
   ]) {
     for (let i = 0; i < tier.count; i++) {
       const cx = rand() * TEX_SIZE;
@@ -322,7 +326,7 @@ function makeDataTex(data, colorSpace) {
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = true;
-  tex.anisotropy = 8;
+  tex.anisotropy = PERF.anisotropy;
   tex.flipY = false;
   tex.needsUpdate = true;
   return tex;
@@ -338,8 +342,9 @@ function bakeMaps(layers, spec) {
   for (let i = 0; i < TEX_PIXELS; i++) height[i] /= maxH;
 
   const smoothH = boxBlurTile(height, 1, 1);
-  const aoBlur = boxBlurTile(smoothH, spec.aoRadius, 2);
-  const brightBlur = boxBlurTile(layers.bright, 2, 1);
+  const aoBlur = boxBlurTile(smoothH, Math.max(2, Math.round(spec.aoRadius * TEX_SCALE)), 2);
+  const brightBlur = boxBlurTile(layers.bright, Math.max(1, Math.round(2 * TEX_SCALE)), 1);
+  const slopeScaled = spec.slope * TEX_SCALE;
 
   const normData = new Uint8Array(TEX_PIXELS * 4);
   const albedoData = new Uint8Array(TEX_PIXELS * 4);
@@ -350,8 +355,8 @@ function bakeMaps(layers, spec) {
       const idx = y * TEX_SIZE + x;
       const gx = (smoothH[y * TEX_SIZE + wrapIdx(x + 1)] - smoothH[y * TEX_SIZE + wrapIdx(x - 1)]) * 0.5;
       const gy = (smoothH[wrapIdx(y + 1) * TEX_SIZE + x] - smoothH[wrapIdx(y - 1) * TEX_SIZE + x]) * 0.5;
-      let nx = -gx * spec.slope;
-      let ny = -gy * spec.slope;
+      let nx = -gx * slopeScaled;
+      let ny = -gy * slopeScaled;
       const invLen = 1 / Math.sqrt(nx * nx + ny * ny + 1);
       nx *= invLen;
       ny *= invLen;
@@ -424,7 +429,7 @@ const COLORWORK_GRIDS = {
   cable: [8, 8],
 };
 
-const COLORWORK_RES = 1024;
+const COLORWORK_RES = PERF.colorworkRes;
 const PATTERN_TILES = 4;
 const FAIR_ISLE_MOTIFS = [
   ["...#....", "..###...", ".#####..", "#######.", ".#####..", "..###...", "...#...."],
@@ -547,7 +552,7 @@ function getColorworkMap(stitch, pattern, c1, c2) {
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;
   tex.generateMipmaps = true;
-  tex.anisotropy = 8;
+  tex.anisotropy = PERF.anisotropy;
   tex.flipY = false;
   tex.needsUpdate = true;
   colorworkCache.set(key, tex);
@@ -585,6 +590,18 @@ export function createYarnMaterial({
     t.repeat.set(repeat[0] / div, repeat[1] / div);
     return t;
   };
+
+  if (!PERF.usePhysicalYarn) {
+    return new THREE.MeshStandardMaterial({
+      color: matColor,
+      map: cloneScaled(mapTex, tileDiv),
+      normalMap: cloneScaled(maps.normalMap),
+      normalScale: new THREE.Vector2(spec.normalScale, spec.normalScale),
+      roughnessMap: cloneScaled(maps.roughnessMap),
+      roughness,
+      metalness: 0,
+    });
+  }
 
   return new THREE.MeshPhysicalMaterial({
     color: matColor,

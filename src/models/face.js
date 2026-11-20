@@ -9,8 +9,10 @@
  */
 
 import * as THREE from "three";
+import { PERF } from "../core/perf.js";
 
-const CELL_SIZE = 256;
+const CELL_SIZE = PERF.isMobile ? 128 : 256;
+const CELL_SCALE = CELL_SIZE / 256;
 const ATLAS_COLS = 6;
 const ATLAS_ROWS = 4;
 const EYE_STROKE = "#1f1517";
@@ -250,6 +252,7 @@ const faceAtlasTexture = (() => {
     ctx.rect(col * CELL_SIZE, row * CELL_SIZE, CELL_SIZE, CELL_SIZE);
     ctx.clip();
     ctx.translate(col * CELL_SIZE + CELL_SIZE / 2, row * CELL_SIZE + CELL_SIZE / 2);
+    if (CELL_SCALE !== 1) ctx.scale(CELL_SCALE, CELL_SCALE);
     CELL_DRAWERS[key](ctx);
     ctx.restore();
   }
@@ -257,7 +260,7 @@ const faceAtlasTexture = (() => {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.premultiplyAlpha = true;
-  tex.anisotropy = 8;
+  tex.anisotropy = PERF.anisotropy;
   tex.generateMipmaps = true;
   tex.minFilter = THREE.LinearMipmapLinearFilter;
   tex.magFilter = THREE.LinearFilter;

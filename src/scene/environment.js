@@ -15,6 +15,12 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { createYarnMaterial } from "../materials/yarn.js";
+import { PERF } from "../core/perf.js";
+
+const BOX_SEGS = PERF.isMobile ? 2 : 4;
+const TUBE_STEP = PERF.isMobile ? 0.08 : 0.035;
+const TUBE_RADIAL = PERF.isMobile ? 6 : 8;
+const RING_SEGS = PERF.isMobile ? 32 : 64;
 
 const TABLE_Y = -0.16;
 const WALL_Z = -5.2;
@@ -58,7 +64,7 @@ function createWallPlasterTexture(renderer) {
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.repeat.set(1 / 6, 1 / 6);
-  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  tex.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), PERF.anisotropy);
   return tex;
 }
 
@@ -103,17 +109,18 @@ export function createRoom({ scene, renderer }) {
   scene.add(group);
 
   const loader = new THREE.TextureLoader();
+  const maxAniso = Math.min(renderer.capabilities.getMaxAnisotropy(), PERF.anisotropy);
   const loadTex = (name) => {
     const tex = loader.load(`./tex/${name}.jpg`);
     tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    tex.anisotropy = maxAniso;
     return tex;
   };
 
   // Wooden tabletop
   const tableDepth = 10.5;
   const tableThick = 0.3;
-  const tableGeo = new RoundedBoxGeometry(20, tableThick, tableDepth, 4, 0.06);
+  const tableGeo = new RoundedBoxGeometry(20, tableThick, tableDepth, BOX_SEGS, 0.06);
   const posAttr = tableGeo.attributes.position;
   const uvAttr = tableGeo.attributes.uv;
   for (let i = 0; i < posAttr.count; i++) {
@@ -199,10 +206,10 @@ export function createRoom({ scene, renderer }) {
   sun.target.position.set(0.5, 0, 0.5);
   sun.map = createWindowGoboTexture();
   sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.mapSize.set(PERF.shadowMapSize, PERF.shadowMapSize);
   sun.shadow.bias = -8e-4;
   sun.shadow.normalBias = 0.06;
-  sun.shadow.radius = 3;
+  sun.shadow.radius = PERF.isMobile ? 2 : 3;
   sun.shadow.camera.near = 12;
   sun.shadow.camera.far = 32;
   group.add(sun, sun.target);
@@ -300,13 +307,14 @@ function placeOnTable(obj, x, z, rotY = 0) {
   return obj;
 }
 
-function createLatheProfile(points, segments = 120) {
+function createLatheProfile(points, segments = PERF.latheCurvePts) {
+  const segCount = Math.min(segments, PERF.latheCurvePts);
   const spline = new THREE.SplineCurve(points.map(([x, y]) => new THREE.Vector2(x, y)));
-  const spaced = spline.getSpacedPoints(segments);
+  const spaced = spline.getSpacedPoints(segCount);
   const topIdx = spaced.reduce((best, pt, i) => (pt.y > spaced[best].y ? i : best), 0);
   const outer = spaced.slice(0, topIdx + 1);
   return {
-    geo: new THREE.LatheGeometry(spaced, 64),
+    geo: new THREE.LatheGeometry(spaced, PERF.latheRadial),
     len: spline.getLength(),
     radiusAt: (y) => {
       const idx = outer.findIndex((pt) => pt.y >= y);
@@ -349,7 +357,7 @@ function addYarnTube(parent, curve, radius, color, closed = false) {
   const len = curve.getLength();
   return addShadowMesh(
     parent,
-    new THREE.TubeGeometry(curve, Math.max(24, Math.round(len / 0.035)), radius, 8, closed),
+    new THREE.TubeGeometry(curve, Math.max(12, Math.round(len / TUBE_STEP)), radius, TUBE_RADIAL, closed),
     getYarn(color, "strand", strandRepeat((len * 0.035) / radius, 2))
   );
 }
@@ -357,7 +365,7 @@ function addYarnTube(parent, curve, radius, color, closed = false) {
 function addYarnRing(parent, radius, y, tubeRad, color) {
   const mesh = addShadowMesh(
     parent,
-    new THREE.TorusGeometry(radius, tubeRad, 10, 64),
+    new THREE.TorusGeometry(radius, tubeRad, PERF.isMobile ? 7 : 10, RING_SEGS),
     getYarn(color, "strand", strandRepeat((TWO_PI * radius * 0.035) / tubeRad, 2))
   );
   mesh.rotation.x = Math.PI / 2;
@@ -411,8 +419,8 @@ function createHaloTexture() {
 }
 
 // Heart-shaped knitted leaves for the potted plant
-const LEAF_SEGS = 64;
-const LEAF_RINGS = 8;
+const LEAF_SEGS = PERF.leafSegs;
+const LEAF_RINGS = PERF.leafRings;
 const LEAF_BULGE = 0.12;
 const LEAF_CENTER_Y = 0.2;
 const LEAF_CONTOUR = Array.from({ length: LEAF_SEGS }, (_, i) => {
@@ -462,13 +470,15 @@ const LEAF_STYLES = [
 const LEAF_ORDER = [0, 1, 0, 2, 1, 3, 0, 2, 1, 0, 3, 2];
 const LEAF_RIM_COLOR = "#2e6a3a";
 
-function addKnittedLeaf(parent, matrix, scale, style) {
-  const [cols, rows] = STITCH_CELL[style.stitch];
-  const mat = getYarn(style.color, style.stitch, [1 / (cols * 0.075), 1 / (rows * 0.065)], style.color2, style.pattern);
-  addShadowMesh(parent, mergeGeometries([createLeafHalf(scale, 1), createLeafHalf(scale, -1)]).applyMatrix4(matrix), mat);
+function collectKnittedLeaf(buckets, rimGeos, matrix, scale, styleIdx) {
+  const blade = mergeGeometries([createLeafHalf(scale, 1), createLeafHalf(scale, -1)]).applyMatrix4(matrix);
+  buckets[styleIdx].push(blade);
 
   const pt = (x, y, z) => new THREE.Vector3(x, y, z).applyMatrix4(matrix);
-  addYarnTube(parent, new THREE.CatmullRomCurve3(LEAF_CONTOUR.map(([x, y]) => pt(x, y, leafCup(x, y))), true), 0.03, LEAF_RIM_COLOR, true);
+  const rimCurve = new THREE.CatmullRomCurve3(LEAF_CONTOUR.map(([x, y]) => pt(x, y, leafCup(x, y))), true);
+  rimGeos.push(
+    new THREE.TubeGeometry(rimCurve, Math.max(12, Math.round(rimCurve.getLength() / TUBE_STEP)), 0.03, TUBE_RADIAL, true)
+  );
 
   const vein = [];
   for (let i = 0; i <= 8; i++) {
@@ -476,7 +486,10 @@ function addKnittedLeaf(parent, matrix, scale, style) {
     const t = y < LEAF_CENTER_Y ? (LEAF_CENTER_Y - y) / LEAF_CENTER_Y : (y - LEAF_CENTER_Y) / 0.556;
     vein.push(pt(0, y, leafCup(0, y) + LEAF_BULGE * Math.sqrt(1 - t * t)));
   }
-  addYarnTube(parent, new THREE.CatmullRomCurve3(vein), 0.022, LEAF_RIM_COLOR);
+  const veinCurve = new THREE.CatmullRomCurve3(vein);
+  rimGeos.push(
+    new THREE.TubeGeometry(veinCurve, Math.max(8, Math.round(veinCurve.getLength() / TUBE_STEP)), 0.022, TUBE_RADIAL, false)
+  );
 }
 
 function createPottedPlant() {
@@ -491,7 +504,7 @@ function createPottedPlant() {
   addYarnRing(group, 0.64, 0.86, 0.06, potColor);
   addYarnRing(group, 0.395, 0.05, 0.05, potColor);
 
-  const soil = addShadowMesh(group, new THREE.CircleGeometry(0.58, 40), getYarn("#4a3224", "boucle", [3, 3]), 0, 0.74, 0);
+  const soil = addShadowMesh(group, new THREE.CircleGeometry(0.58, PERF.isMobile ? 20 : 40), getYarn("#4a3224", "boucle", [3, 3]), 0, 0.74, 0);
   soil.rotation.x = -Math.PI / 2;
 
   const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
@@ -529,9 +542,15 @@ function createPottedPlant() {
   }
 
   const up = v3(0, 1, 0);
+  const stemGeos = [];
+  const leafBuckets = LEAF_STYLES.map(() => []);
+  const rimGeos = [];
   let leafIdx = 0;
+
   stems.forEach((curve, sIdx) => {
-    addYarnTube(group, curve, 0.035, "#5b9442");
+    stemGeos.push(
+      new THREE.TubeGeometry(curve, Math.max(12, Math.round(curve.getLength() / TUBE_STEP)), 0.035, TUBE_RADIAL, false)
+    );
     for (const t of leafT[sIdx]) {
       const pt = curve.getPoint(t);
       const tan = curve.getTangent(t);
@@ -557,19 +576,37 @@ function createPottedPlant() {
         rz.multiplyScalar(scale)
       );
       mat4.setPosition(pt);
-      addKnittedLeaf(group, mat4, scale, LEAF_STYLES[LEAF_ORDER[leafIdx++ % LEAF_ORDER.length]]);
+      collectKnittedLeaf(leafBuckets, rimGeos, mat4, scale, LEAF_ORDER[leafIdx++ % LEAF_ORDER.length]);
     }
   });
+
+  // Batch stems, rims/veins, and leaf blades by material to cut draw calls from 48 -> 9
+  addShadowMesh(group, mergeGeometries(stemGeos), getYarn("#5b9442", "strand", strandRepeat(1.8, 2)));
+  stemGeos.forEach((g) => g.dispose());
+
+  addShadowMesh(group, mergeGeometries(rimGeos), getYarn(LEAF_RIM_COLOR, "strand", strandRepeat(1.6, 2)));
+  rimGeos.forEach((g) => g.dispose());
+
+  leafBuckets.forEach((geos, idx) => {
+    if (!geos.length) return;
+    const style = LEAF_STYLES[idx];
+    const [cols, rows] = STITCH_CELL[style.stitch];
+    const mat = getYarn(style.color, style.stitch, [1 / (cols * 0.075), 1 / (rows * 0.065)], style.color2, style.pattern);
+    addShadowMesh(group, mergeGeometries(geos), mat);
+    geos.forEach((g) => g.dispose());
+  });
+
   return group;
 }
 
 function createYarnBall(radius, coreColor, strandColors, rand) {
   const group = new THREE.Group();
-  addShadowMesh(group, new THREE.SphereGeometry(radius - 0.03, 32, 22), getYarn(coreColor, "stockinette", sphereRepeat(radius - 0.03)));
+  const sphereSegs = PERF.isMobile ? 16 : 32;
+  addShadowMesh(group, new THREE.SphereGeometry(radius - 0.03, sphereSegs, Math.round(sphereSegs * 0.7)), getYarn(coreColor, "stockinette", sphereRepeat(radius - 0.03)));
   const buckets = strandColors.map(() => []);
   const tubeR = (radius / 0.55) * 0.032;
 
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < PERF.yarnBallTubes; i++) {
     const axis = new THREE.Vector3(rand() * 2 - 1, rand() * 2 - 1, rand() * 2 - 1).normalize();
     const ref = Math.abs(axis.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
     const u = new THREE.Vector3().crossVectors(axis, ref).normalize();
@@ -580,8 +617,9 @@ function createYarnBall(radius, coreColor, strandColors, rand) {
     const h0 = (rand() - 0.5) * 0.6 * r;
     const dh = (rand() - 0.5) * 0.7 * r;
     const pts = [];
-    for (let s = 0; s <= 40; s++) {
-      const f = s / 40;
+    const ptSteps = PERF.isMobile ? 20 : 40;
+    for (let s = 0; s <= ptSteps; s++) {
+      const f = s / ptSteps;
       const a = a0 + f * sweep;
       const h = THREE.MathUtils.clamp(h0 + dh * f, -0.85 * r, 0.85 * r);
       const ringR = Math.sqrt(r * r - h * h);
@@ -592,7 +630,9 @@ function createYarnBall(radius, coreColor, strandColors, rand) {
           .addScaledVector(axis, h)
       );
     }
-    buckets[i % strandColors.length].push(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 64, tubeR, 6, false));
+    buckets[i % strandColors.length].push(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), PERF.yarnBallTubeSegs, tubeR, PERF.yarnBallRadial, false)
+    );
   }
 
   buckets.forEach((geos, idx) => {
@@ -866,7 +906,7 @@ function createFloorLamp() {
   const spot = new THREE.SpotLight("#ffc27a", 0, 0, 0.85, 0.8, 1);
   spot.position.set(shadePos.x, shadePos.y - 0.1, shadePos.z);
   spot.target.position.set(0.2, 0, 0.2);
-  spot.shadow.mapSize.set(2048, 2048);
+  spot.shadow.mapSize.set(PERF.shadowMapSize, PERF.shadowMapSize);
   spot.shadow.bias = -8e-4;
   spot.shadow.normalBias = 0.06;
   spot.shadow.camera.near = 0.5;
@@ -969,20 +1009,38 @@ function createCandle() {
 }
 
 export function createProps({ scene, renderer }) {
-  propAnisotropy = renderer.capabilities.getMaxAnisotropy();
+  propAnisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), PERF.anisotropy);
   const group = new THREE.Group();
   scene.add(group);
 
-  group.add(createPottedPlant(), createYarnCluster(), createFoldedCloth(), createCoaster());
+  const disableShadows = (obj) => {
+    if (!PERF.isMobile) return obj;
+    obj.traverse((child) => {
+      if (child.isMesh) child.castShadow = false;
+    });
+    return obj;
+  };
+
+  group.add(
+    createPottedPlant(),
+    disableShadows(createYarnCluster()),
+    disableShadows(createFoldedCloth()),
+    disableShadows(createCoaster())
+  );
 
   const dayGroup = new THREE.Group();
   const dayMug = createDayMug();
-  dayGroup.add(dayMug.group);
+  dayGroup.add(disableShadows(dayMug.group));
 
   const nightGroup = new THREE.Group();
   const lamp = createFloorLamp();
   const candle = createCandle();
-  nightGroup.add(createNightMug(), lamp.group, createBookStack(), candle.group);
+  nightGroup.add(
+    disableShadows(createNightMug()),
+    lamp.group,
+    disableShadows(createBookStack()),
+    disableShadows(candle.group)
+  );
 
   group.add(dayGroup, nightGroup, lamp.spot.target);
   nightGroup.visible = false;
@@ -1075,14 +1133,14 @@ export function createBasket(wallThickness = 0.26) {
   ];
 
   for (const [w, h, d, x, z] of rims) {
-    const rim = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 4, 0.12), makeMat(Math.max(w, d), h));
+    const rim = new THREE.Mesh(new RoundedBoxGeometry(w, h, d, BOX_SEGS, 0.12), makeMat(Math.max(w, d), h));
     rim.position.set(x, h / 2 - 0.02, z);
     rim.castShadow = rim.receiveShadow = true;
     rim.userData.rim = true;
     group.add(rim);
   }
 
-  const base = new THREE.Mesh(new RoundedBoxGeometry(6.52, 0.16, 4.52, 4, 0.07), makeMat(6, 0.3));
+  const base = new THREE.Mesh(new RoundedBoxGeometry(6.52, 0.16, 4.52, BOX_SEGS, 0.07), makeMat(6, 0.3));
   base.position.y = -0.08;
   base.receiveShadow = true;
   group.add(base);

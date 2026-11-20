@@ -10,6 +10,7 @@
 
 import * as THREE from "three";
 import { createFeltMaterial } from "../shaders/felt.js";
+import { PERF } from "../core/perf.js";
 
 export const SPECIES_NAMES = [
   "bear",
@@ -403,19 +404,20 @@ function extractIsoSurface(fn, minB, maxB, step) {
   };
 }
 
-const PARTICLE_SPACING = 0.11;
+const PARTICLE_SPACING = PERF.particleSpacing;
 
 function sampleInteriorParticles(prims, fn, minB, maxB) {
   let bestList = null;
   let bestScore = -1;
+  const steps = PERF.particleOffsetSteps;
 
-  for (let ox = 0; ox < 3; ox++) {
-    for (let oy = 0; oy < 3; oy++) {
-      for (let oz = 0; oz < 3; oz++) {
+  for (let ox = 0; ox < steps; ox++) {
+    for (let oy = 0; oy < steps; oy++) {
+      for (let oz = 0; oz < steps; oz++) {
         const list = [];
-        for (let x = minB[0] + (ox / 3) * PARTICLE_SPACING; x <= maxB[0]; x += PARTICLE_SPACING) {
-          for (let y = minB[1] + (oy / 3) * PARTICLE_SPACING; y <= maxB[1]; y += PARTICLE_SPACING) {
-            for (let z = minB[2] + (oz / 3) * PARTICLE_SPACING; z <= maxB[2]; z += PARTICLE_SPACING) {
+        for (let x = minB[0] + (ox / steps) * PARTICLE_SPACING; x <= maxB[0]; x += PARTICLE_SPACING) {
+          for (let y = minB[1] + (oy / steps) * PARTICLE_SPACING; y <= maxB[1]; y += PARTICLE_SPACING) {
+            for (let z = minB[2] + (oz / steps) * PARTICLE_SPACING; z <= maxB[2]; z += PARTICLE_SPACING) {
               if (fn(x, y, z) < -0.0275) list.push(x, y, z);
             }
           }
@@ -499,7 +501,7 @@ function generateSpeciesTemplate(name) {
     maxB[i] += 0.1;
   }
 
-  const { pos, index } = extractIsoSurface(fn, minB, maxB, 0.045);
+  const { pos, index } = extractIsoSurface(fn, minB, maxB, PERF.isoStep);
   const rest = sampleInteriorParticles(prims, fn, minB, maxB);
 
   const [eyeYaw, eyePitch, eyeOrigin] = face.eye;

@@ -9,6 +9,17 @@
  */
 
 import * as THREE from "three";
+import { PERF } from "../core/perf.js";
+
+const FELT_TONE_FN = PERF.simpleFeltTone
+  ? `// Fast single-octave wool tone for mobile GPUs
+float feltTone( vec3 p ) {
+  return 0.91 + 0.14 * fzNoise( p * 12.0 );
+}`
+  : `// Wool depth tone: macro mottling combined with fine fiber grain
+float feltTone( vec3 p ) {
+  return 0.9 + 0.12 * fzNoise( p * 9.0 ) + 0.06 * fzNoise( p * 60.0 );
+}`;
 
 const FELT_NOISE_GLSL = `
 float fzHash3( vec3 p ) {
@@ -29,10 +40,7 @@ float fzNoise( vec3 p ) {
     mix( mix( fzHash3( i + vec3( 0, 0, 1 ) ), fzHash3( i + vec3( 1, 0, 1 ) ), f.x ), mix( fzHash3( i + vec3( 0, 1, 1 ) ), fzHash3( i + vec3( 1, 1, 1 ) ), f.x ), f.y ),
     f.z );
 }
-// Wool depth tone: macro mottling combined with fine fiber grain
-float feltTone( vec3 p ) {
-  return 0.9 + 0.12 * fzNoise( p * 9.0 ) + 0.06 * fzNoise( p * 60.0 );
-}
+${FELT_TONE_FN}
 `;
 
 function injectFeltShader(vertExtra = "", fragExtra = "") {
@@ -59,15 +67,22 @@ function injectFeltShader(vertExtra = "", fragExtra = "") {
 }
 
 export function createFeltMaterial() {
-  const mat = new THREE.MeshPhysicalMaterial({
-    color: "#ffffff",
-    vertexColors: true,
-    roughness: 1,
-    metalness: 0,
-    sheen: 0.6,
-    sheenColor: "#fff4e6",
-    sheenRoughness: 0.8,
-  });
+  const mat = PERF.isMobile
+    ? new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        vertexColors: true,
+        roughness: 1,
+        metalness: 0,
+      })
+    : new THREE.MeshPhysicalMaterial({
+        color: "#ffffff",
+        vertexColors: true,
+        roughness: 1,
+        metalness: 0,
+        sheen: 0.6,
+        sheenColor: "#fff4e6",
+        sheenRoughness: 0.8,
+      });
   mat.onBeforeCompile = injectFeltShader();
   mat.customProgramCacheKey = () => "felt";
   return mat;
@@ -124,7 +139,12 @@ export const fuzzGlowUniform = { value: 0.35 };
 
 export function addFeltFuzz(
   mesh,
-  { length = 0.02, density = 110, layers = 5, cover = 0.7 } = {}
+  {
+    length = 0.02,
+    density = 110,
+    layers = PERF.fuzzLayers,
+    cover = PERF.isMobile ? 0.78 : 0.7,
+  } = {}
 ) {
   const uniforms = {
     uFuzzLength: { value: length },
@@ -158,7 +178,7 @@ export function addFeltFuzz(
     instanced.setMatrixAt(i, identity);
   }
   instanced.instanceMatrix.needsUpdate = true;
-  instanced.receiveShadow = true;
+  instanced.receiveShadow = PERF.fuzzReceiveShadow;
   instanced.frustumCulled = false;
   mesh.add(instanced);
   return instanced;

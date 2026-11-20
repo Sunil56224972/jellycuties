@@ -146,10 +146,12 @@ export function createSkinBinding(body, geometry, anchors) {
     }
 
     for (let i = 0; i < vertCount * 3; i += 3) {
-      const invLen = 1 / (Math.hypot(normArr[i], normArr[i + 1], normArr[i + 2]) || 1);
-      normArr[i] *= invLen;
-      normArr[i + 1] *= invLen;
-      normArr[i + 2] *= invLen;
+      const nx = normArr[i], ny = normArr[i + 1], nz = normArr[i + 2];
+      const len = Math.sqrt(nx * nx + ny * ny + nz * nz);
+      const invLen = len > 1e-8 ? 1 / len : 1;
+      normArr[i] = nx * invLen;
+      normArr[i + 1] = ny * invLen;
+      normArr[i + 2] = nz * invLen;
     }
     normAttr.needsUpdate = true;
     geometry.boundingSphere.center.copy(body.center);

@@ -38,6 +38,7 @@ export class SoftBodyWorld {
     wallThickness = 0.26,
     gravity = -12,
     substeps = 6,
+    collisionIters = COLLISION_ITERS,
     friction = 0.5,
   } = {}) {
     this.halfX = halfX;
@@ -47,6 +48,7 @@ export class SoftBodyWorld {
     this.wallThickness = wallThickness;
     this.gravity = new THREE.Vector3(0, gravity, 0);
     this.substeps = substeps;
+    this.collisionIters = collisionIters;
     this.friction = friction;
     this.bodies = [];
     this.onImpact = null;
@@ -285,7 +287,7 @@ export class SoftBodyWorld {
       this._impCnt.fill(0);
       this._floorCnt.fill(0);
 
-      for (let iter = 0; iter < COLLISION_ITERS; iter++) {
+      for (let iter = 0; iter < this.collisionIters; iter++) {
         const first = iter === 0;
         if (numBodies > 1) {
           if (first) this._buildHash();

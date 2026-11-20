@@ -28,6 +28,7 @@ import {
 } from "./audio/sound.js";
 import { createParticles, createDizzyStars } from "./effects/particles.js";
 import { createRoom, createProps, createBasket } from "./scene/environment.js";
+import { PERF } from "./core/perf.js";
 
 const query = new URLSearchParams(location.search);
 const parseVec3 = (str) => str && new THREE.Vector3(...str.split(",").map(Number));
@@ -36,16 +37,16 @@ const randRange = (lo, hi) => lo + Math.random() * (hi - lo);
 const HALF_X = 3;
 const HALF_Z = 2;
 const WALL_THICKNESS = 0.26;
-const MAX_ANIMALS = 30;
-const MIN_ANIMALS = 8;
+const MAX_ANIMALS = PERF.maxAnimals;
+const MIN_ANIMALS = PERF.minAnimals;
 
-// Renderer
+// Renderer (preserveDrawingBuffer: false avoids expensive full-screen copies on Android GPUs)
 const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-  preserveDrawingBuffer: true,
+  antialias: PERF.antialias,
   powerPreference: "high-performance",
 });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 1.5));
+let activePixelRatio = Math.min(devicePixelRatio, PERF.maxPixelRatio);
+renderer.setPixelRatio(activePixelRatio);
 renderer.setSize(innerWidth, innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
@@ -70,9 +71,30 @@ function getTargetNightFactor() {
 let nightFactor = getTargetNightFactor();
 
 // Camera & Controls
+const customCam = parseVec3(query.get("cam"));
 const camera = new THREE.PerspectiveCamera(32, innerWidth / innerHeight, 0.1, 100);
-const startCam = parseVec3(query.get("cam")) ?? new THREE.Vector3(0, 5.4, 7.6);
-camera.position.copy(startCam);
+
+function applyResponsiveCamera(resetPosition = false) {
+  const aspect = innerWidth / innerHeight;
+  camera.aspect = aspect;
+  if (aspect < 1) {
+    // Widen vertical FOV and pull back slightly on portrait mobile screens so the full basket fits with rim margin
+    camera.fov = Math.min(54, Math.round(32 / Math.pow(aspect, 0.55)));
+    if (resetPosition && !customCam) {
+      const pull = Math.min(1.68, 1.08 / Math.pow(aspect, 0.45));
+      camera.position.set(0, 5.4 * pull, 7.6 * pull);
+    }
+  } else {
+    camera.fov = 32;
+    if (resetPosition && !customCam) {
+      camera.position.set(0, 5.4, 7.6);
+    }
+  }
+  camera.updateProjectionMatrix();
+}
+
+if (customCam) camera.position.copy(customCam);
+applyResponsiveCamera(true);
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.target.set(0, 0.2, 0);
@@ -81,10 +103,15 @@ controls.mouseButtons = {
   MIDDLE: THREE.MOUSE.DOLLY,
   RIGHT: THREE.MOUSE.ROTATE,
 };
+// One-finger touch interacts with animals/basket; two-finger touch zooms and orbits
+controls.touches = {
+  ONE: null,
+  TWO: THREE.TOUCH.DOLLY_ROTATE,
+};
 controls.enablePan = false;
 controls.enableDamping = true;
 controls.minDistance = 5;
-controls.maxDistance = 20;
+controls.maxDistance = 22;
 controls.maxPolarAngle = Math.PI * 0.42;
 
 // Play Arena (Basket + Animals + Particles)
@@ -99,10 +126,13 @@ const world = new SoftBodyWorld({
   halfX: HALF_X,
   halfZ: HALF_Z,
   wallThickness: WALL_THICKNESS,
+  substeps: PERF.physicsSubsteps,
+  collisionIters: PERF.collisionIters,
 });
 const particles = createParticles(arenaGroup);
 
 const animals = [];
+let fuzzDisabledByPerf = false;
 
 function makeDizzy(animal, duration) {
   animal.face.setExpression("dizzy", duration);
@@ -122,7 +152,8 @@ function spawnAnimal(species, x, z, y = randRange(2.5, 3.5)) {
   });
 
   const mesh = new THREE.Mesh(model.geometry, model.material);
-  addFeltFuzz(mesh);
+  const fuzz = addFeltFuzz(mesh);
+  if (fuzzDisabledByPerf) fuzz.visible = false;
   mesh.castShadow = true;
   mesh.frustumCulled = false;
   arenaGroup.add(mesh);
@@ -142,6 +173,7 @@ function spawnAnimal(species, x, z, y = randRange(2.5, 3.5)) {
     data: model,
     body,
     mesh,
+    fuzz,
     skin,
     face,
     comb: createFurComb(model.geometry),
@@ -206,19 +238,19 @@ function handleOutOfBounds(animal) {
 }
 
 // Initial animal drop-in
-const initialCount = Number(query.get("n") ?? 10);
+const initialCount = Number(query.get("n") ?? PERF.defaultAnimals);
 const initialQueue = [];
 for (let i = 0; i < initialCount; i++) initialQueue.push(SPECIES_NAMES[i % SPECIES_NAMES.length]);
 for (let i = 0; i < initialCount; i++) {
-  const col = i % 5;
-  const row = Math.floor(i / 5) % 2;
-  const tier = Math.floor(i / 10);
+  const col = i % 4;
+  const row = Math.floor(i / 4) % 2;
+  const tier = Math.floor(i / 8);
   setTimeout(() => {
     spawnAnimal(
       initialQueue[i],
-      -2.2 + col * 1.1 + randRange(-0.15, 0.15),
-      -0.9 + row * 1.6 + randRange(-0.15, 0.15),
-      randRange(2.5, 3.5) + tier * 1.2
+      (PERF.isMobile ? -1.8 + col * 1.2 : -2.2 + (i % 5) * 1.1) + randRange(-0.15, 0.15),
+      (PERF.isMobile ? -0.8 + row * 1.5 : -0.9 + (Math.floor(i / 5) % 2) * 1.6) + randRange(-0.15, 0.15),
+      randRange(2.5, 3.5) + (PERF.isMobile ? tier : Math.floor(i / 10)) * 1.2
     );
     playPopSound();
   }, 250 + i * 160);
@@ -346,7 +378,7 @@ function setHovered(animal) {
 renderer.domElement.addEventListener("contextmenu", (e) => e.preventDefault());
 
 renderer.domElement.addEventListener("pointerdown", (e) => {
-  if (e.button !== 0) return;
+  if (e.button !== 0 || !e.isPrimary) return;
   initAudio();
   wakeAnimals();
 
@@ -518,8 +550,7 @@ addEventListener("keydown", (e) => {
 });
 
 addEventListener("resize", () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
+  applyResponsiveCamera(false);
   renderer.setSize(innerWidth, innerHeight);
 });
 
@@ -535,6 +566,7 @@ const tmpEuler = new THREE.Euler();
 const baseGravity = new THREE.Vector3(0, -12, 0);
 const tiltAxis = new THREE.Vector3();
 const pivotPt = new THREE.Vector3();
+const pivotRot = new THREE.Vector3();
 const invQuat = new THREE.Quaternion();
 const camShiftPrev = new THREE.Vector3();
 const camShiftCur = new THREE.Vector3();
@@ -611,7 +643,8 @@ function updateBasketMotion(dt) {
     const edgeDist = Math.min(3.26 / Math.max(Math.abs(nx), 1e-6), 2.26 / Math.max(Math.abs(nz), 1e-6));
     pivotPt.set(-nx * edgeDist, -0.16, -nz * edgeDist);
     arenaGroup.quaternion.setFromAxisAngle(tiltAxis.set(-nz, 0, nx), tiltMag);
-    arenaGroup.position.copy(pivotPt).sub(pivotPt.clone().applyQuaternion(arenaGroup.quaternion));
+    pivotRot.copy(pivotPt).applyQuaternion(arenaGroup.quaternion);
+    arenaGroup.position.copy(pivotPt).sub(pivotRot);
   }
 
   arenaGroup.updateMatrixWorld();
@@ -762,16 +795,55 @@ function updateSocialBehavior(dt, now) {
   }
 }
 
-// Main Animation Loop
+// Main Animation Loop + Adaptive Mobile Performance Scaler
 const localCamPos = new THREE.Vector3();
 let lastFrameMs = performance.now();
 let elapsedSec = 0;
+let perfFrames = 0;
+let perfSumMs = 0;
+let perfTier = 0;
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) lastFrameMs = performance.now();
+});
+
+function checkAdaptiveMobilePerf(rawDeltaMs) {
+  if (!PERF.isMobile || elapsedSec < 2.5 || perfTier >= 3) return;
+  perfFrames++;
+  perfSumMs += rawDeltaMs;
+  if (perfFrames < 45) return;
+
+  const avgMs = perfSumMs / perfFrames;
+  perfFrames = 0;
+  perfSumMs = 0;
+
+  if (avgMs > 28) {
+    perfTier++;
+    if (perfTier === 1 && activePixelRatio > 0.85) {
+      activePixelRatio = 0.85;
+      renderer.setPixelRatio(activePixelRatio);
+      renderer.setSize(innerWidth, innerHeight);
+    } else if (perfTier === 2) {
+      fuzzDisabledByPerf = true;
+      for (const a of animals) {
+        if (a.fuzz) a.fuzz.visible = false;
+      }
+    } else if (perfTier === 3 && activePixelRatio > 0.72) {
+      activePixelRatio = 0.72;
+      renderer.setPixelRatio(activePixelRatio);
+      renderer.setSize(innerWidth, innerHeight);
+    }
+  }
+}
 
 renderer.setAnimationLoop(() => {
+  if (document.hidden) return;
   const frameNow = performance.now();
-  const dt = Math.min((frameNow - lastFrameMs) / 1000, 1 / 30);
+  const rawDeltaMs = frameNow - lastFrameMs;
+  const dt = Math.min(rawDeltaMs / 1000, 1 / 30);
   lastFrameMs = frameNow;
   elapsedSec += dt;
+  checkAdaptiveMobilePerf(rawDeltaMs);
 
   soundBudget = Math.min(4, soundBudget + dt * 14);
   nightFactor += THREE.MathUtils.clamp(getTargetNightFactor() - nightFactor, -dt / 4, dt / 4);
@@ -783,7 +855,8 @@ renderer.setAnimationLoop(() => {
   updateBasketMotion(dt);
   updateRainSpawn(dt);
 
-  for (const a of [...animals]) {
+  for (let i = animals.length - 1; i >= 0; i--) {
+    const a = animals[i];
     const c = a.body.center;
     if (
       ((Math.abs(c.x) > 3.3 || Math.abs(c.z) > 2.3) && worldCheckPt.copy(c).applyMatrix4(arenaGroup.matrixWorld).y < 0.2) ||
