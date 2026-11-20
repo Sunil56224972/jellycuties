@@ -1,0 +1,38 @@
+{
+  "name": "jelly-zoo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An interactive 3D soft-body animal playground built with Three.js — poke, squash, drag, pet and toss adorable needle-felted creatures.",
+  "author": "Sunil <sunil56224972@users.noreply.github.com>",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node scripts/sync-site.js",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "vite": "^6.0.0"
+  },
+  "dependencies": {
+    "three": "^0.170.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Sunil56224972/jellycuties.git"
+  },
+  "keywords": [
+    "threejs",
+    "3d",
+    "soft-body",
+    "physics",
+    "interactive",
+    "webgl",
+    "animals",
+    "needle-felted"
+  ],
+  "bugs": {
+    "url": "https://github.com/Sunil56224972/jellycuties/issues"
+  },
+  "homepage": "https://github.com/Sunil56224972/jellycuties#readme"
+}
